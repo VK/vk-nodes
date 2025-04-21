@@ -1,3 +1,3 @@
 # VK Nodes
 
-ComfyUI nodes to simplify by tiled render
+ComfyUI nodes to simplify my tiled render
