@@ -142,7 +142,7 @@ class TiledCropNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "config": ("STRING", {"default": "{}"}),  # JSON config input
+                "render_config": ("STRING", {"default": "{}"}),  # JSON config input
             }
         }
 
@@ -152,10 +152,10 @@ class TiledCropNode:
     CATEGORY = "vk-nodes"
     OUTPUT_NODE = False
 
-    def process(self, config):
+    def process(self, render_config):
         # Parse JSON config
         try:
-            cfg = json.loads(config)
+            cfg = json.loads(render_config)
         except json.JSONDecodeError:
             logging.error("Invalid JSON in config")
             return 0, 0, 0, 0, 0, "8x8"  # Default return to prevent crashes

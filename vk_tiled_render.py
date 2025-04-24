@@ -7,6 +7,7 @@ import re
 from PIL import Image
 from nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -244,5 +245,399 @@ class TiledRenderNode:
         logging.info(f"Generated FFmpeg filter_complex: {filter_complex}")
         return filter_complex, inputs
 
-NODE_CLASS_MAPPINGS["TiledRenderNode"] = TiledRenderNode
-NODE_DISPLAY_NAME_MAPPINGS["TiledRenderNode"] = "Tiled Render"
+
+
+
+class PrepareJobs:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "target_node": ("INT",),
+                "self_node": ("INT",),
+                "character_id": ("INT", {"default": 1, "min": 1}),
+                "output_path": ("STRING", {"default": ""}),
+                "output_format": ("STRING", {"default": "landscape"}),
+                "write_files": ("BOOLEAN", {"default": False, "tooltip": "Only enable if you want job files to be written"}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING",)
+    RETURN_NAMES = ("character_name", "character_audio_path", "character_image_path",)
+
+    FUNCTION = "export_workflow"
+    CATEGORY = "vk-nodes"
+    OUTPUT_NODE = True
+
+    def get_workflow(self):
+        """ get the workflow. I guess things like this can change
+
+        """
+
+        from server import PromptServer
+        prompt_queue = PromptServer.instance.prompt_queue
+
+        currently_running = prompt_queue.currently_running
+        key = list(currently_running.keys())[-1]
+        return currently_running[key][3]["extra_pnginfo"]["workflow"]        
+
+    def convert_editor_workflow_to_api_job(self, editor_workflow: dict) -> dict:
+        api_workflow = {}
+
+        # Build link map (from link ID to (node_id, output_index))
+        def build_link_index(editor_workflow):
+            link_map = {}
+            for node in editor_workflow.get("nodes", []):
+                for output_index, output in enumerate(node.get("outputs", [])):
+                    links = output.get("links")
+                    if links:
+                        for link_id in links:
+                            link_map[link_id] = (str(node["id"]), output_index)
+            return link_map
+
+        link_map = build_link_index(editor_workflow)
+
+        # Find SetNode mappings: widgets_values → source (upstream node and output index)
+        set_node_sources = {}
+        node_id_to_node = {str(n["id"]): n for n in editor_workflow["nodes"]}
+
+        for node in editor_workflow.get("nodes", []):
+            if node["type"] == "SetNode":
+                widgets_values = node.get("widgets_values")[0]
+                input_conns = node.get("inputs", [])
+                if input_conns and input_conns[0].get("link") is not None:
+                    link_id = input_conns[0]["link"]
+                    if link_id in link_map:
+                        set_node_sources[widgets_values] = link_map[link_id]
+                    else:
+                        print(f"Warning: SetNode '{widgets_values}' has unresolvable link")
+                else:
+                    print(f"Warning: SetNode '{widgets_values}' has no input connection")
+
+        # Prepare a reverse lookup: link ID → where it's consumed
+        input_links_to_patch = {}  # get_node_id → actual input (from SetNode)
+
+        for node in editor_workflow.get("nodes", []):
+            if node["type"] == "GetNode":
+                widgets_values = node.get("widgets_values")[0]
+                if widgets_values not in set_node_sources:
+                    print(f"Warning: GetNode '{widgets_values}' has no matching SetNode")
+                    continue
+                new_source = set_node_sources[widgets_values]
+                node_id = str(node["id"])
+
+                # All links pointing to this node's outputs should be redirected
+                outputs = node.get("outputs", [])
+                for output_index, output in enumerate(outputs):
+                    for link_id in output.get("links", []):
+                        input_links_to_patch[link_id] = new_source
+
+        # Now build API job
+        for node in editor_workflow.get("nodes", []):
+            node_id = str(node["id"])
+            class_type = node["type"]
+
+            # Skip SetNode and GetNode — we've rerouted them already
+            if class_type in ["SetNode", "GetNode"]:
+                continue
+
+            inputs = {}
+
+            # widgets_values → positional inputs
+            widget_names = []
+            try:
+                node_class = NODE_CLASS_MAPPINGS[class_type]
+                input_types = node_class.INPUT_TYPES()
+                print(input_types)
+                widget_names = list(input_types.get("required", {}).keys())
+                widget_names_optional = list(input_types.get("optional", {}).keys())
+                widget_names.extend(widget_names_optional)
+            except Exception as e:
+                print(f"Could not resolve class {class_type}: {e}")
+
+            if "widgets_values" in node:
+                if isinstance(node["widgets_values"], dict):
+                    inputs.update(node["widgets_values"])   
+
+            if "widgets_values" in node:
+                if isinstance(node["widgets_values"], list):
+                    widge_name_delete_needed = len(node["widgets_values"]) != len(widget_names)
+
+            # connection inputs
+            if "inputs" in node:
+                for input_entry in node["inputs"]:
+                    name = input_entry["name"]
+                    link_id = input_entry.get("link")
+                    if link_id is not None:
+                        # Check if we need to patch this link
+                        if link_id in input_links_to_patch:
+                            inputs[name] = list(input_links_to_patch[link_id])
+                            if name in widget_names and widge_name_delete_needed:
+                                widget_names.remove(name)                            
+                        elif link_id in link_map:
+                            inputs[name] = list(link_map[link_id])
+                            if name in widget_names and widge_name_delete_needed:
+                                widget_names.remove(name)
+                        else:
+                            print(f"Warning: Unresolved link {link_id} in node {node_id}")
+
+
+            if "widgets_values" in node:
+                if isinstance(node["widgets_values"], list):
+                    for i, value in enumerate(node["widgets_values"]):
+                        if i < len(widget_names):
+                            if widget_names[i] not in inputs:
+                                inputs[widget_names[i]] = value
+
+
+
+            api_workflow[node_id] = {
+                "inputs": inputs,
+                "class_type": class_type,
+                "_meta": {
+                    "title": node.get("title", class_type)
+                }
+            }
+
+        return api_workflow
+
+
+    def filter_workflow(self, api_workflow: dict, target_node: int) -> dict:
+        """
+        Returns a filtered version of api_workflow, containing only the nodes
+        required to compute the output of target_node.
+        """
+        required_nodes = set()
+        queue = [str(target_node)]  # use strings for consistency with node IDs in api_workflow
+
+        while queue:
+            current = queue.pop()
+            if current in required_nodes:
+                continue
+            required_nodes.add(current)
+
+            node = api_workflow.get(current)
+            if not node:
+                print(f"Warning: Node {current} not found in API workflow")
+                continue
+
+            for input_value in node["inputs"].values():
+                if isinstance(input_value, list) and len(input_value) == 2:
+                    upstream_node = str(input_value[0])
+                    queue.append(upstream_node)
+
+        # Build filtered dictionary
+        return {node_id: node for node_id, node in api_workflow.items() if node_id in required_nodes}
+
+
+    def get_audio_for(self, output_path, index):
+        all_videos = glob.glob(os.path.join(MY_OUTPUT_FOLDER, output_path, f"audio/{index}_*"))
+        if len(all_videos) > 1:
+            raise Exception(f"Multiple audio files for {index} in {output_path} audio")
+        
+        if len(all_videos) == 0:
+            return None
+
+        return all_videos[0]
+
+
+    def get_stills_for(self, output_path, index):
+        all_stills = glob.glob(os.path.join(MY_OUTPUT_FOLDER, output_path, f"stills/{index}_*"))
+        if len(all_stills) > 1:
+            raise Exception(f"Multiple image files for {index} in {output_path} stills")
+        
+        if len(all_stills) == 0:
+            return None
+
+        return all_stills[0]
+
+
+    def replace_input_with_static_values(self,
+        node_id,
+        character_name,
+        character_audio_path,
+        character_image_path,
+        api_workflow
+    ):
+        import copy
+        api_workflow = copy.deepcopy(api_workflow)
+
+        node_str = str(node_id)
+
+        replace = {
+            0: character_name,
+            1: character_audio_path.replace("\\\\", "/").replace("\\", "/"),
+            2: character_image_path.replace("\\\\", "/").replace("\\", "/"),
+        }
+        print(replace)
+
+        for nk, nv in api_workflow.items():
+            if "inputs" in nv:
+                for ik, iv in nv["inputs"].items():
+                    if isinstance(iv, list) and iv[0] == node_str:
+                        nv["inputs"][ik] = replace[iv[1]]
+
+
+        return api_workflow
+
+
+    def remove_reroutes(self, api_workflow):
+        """ remove reroutes
+        """
+        reroutes = {k:v for k, v in api_workflow.items() if v["class_type"] == "Reroute"}
+        
+        for nk, nv in api_workflow.items():
+            if "inputs" in nv:
+                for ik, iv in nv["inputs"].items():
+                    if isinstance(iv, list) and iv[0] in reroutes:
+                        nv["inputs"][ik] = reroutes[iv[0]]["inputs"][""]
+
+        return {k:v for k, v in api_workflow.items() if k not in reroutes}
+            
+
+
+
+
+    def bundle_workflow_to_zip(
+        self,
+        workflow_data,
+        character_id,
+        character_name,
+        character_audio_path,
+        character_image_path,
+        output_dir,
+        base_filename
+    ):
+        """
+        Saves workflow JSON, media files, and metadata into a ZIP archive.
+
+        Parameters:
+        - workflow_data (dict): The API workflow JSON.
+        - character_id (int): Character ID (e.g., 1-6).
+        - character_name (str): Full character name (e.g., '3_Ada').
+        - character_audio_path (str): Path to audio file.
+        - character_image_path (str): Path to image file.
+        - output_dir (str): Directory to save files.
+        - base_filename (str): Base filename for the zip and json (e.g., '3_Ada_json').
+        - generated_by (str): Optional identifier for tracking origin.
+        """
+
+        import os
+        import json
+        import zipfile
+        from datetime import datetime        
+        
+        os.makedirs(output_dir, exist_ok=True)
+
+        json_filename = "run.json"
+        json_path = os.path.join(output_dir, json_filename)
+
+        # Save workflow JSON
+        with open(json_path, "w") as f:
+            json.dump(workflow_data, f, indent=2)
+
+        # Prepare info.json
+        info = {
+            "character_id": character_id,
+            "character_name": character_name,
+            "audio_path": character_audio_path,
+            "image_path": character_image_path,
+            "workflow_json": json_filename,
+            "timestamp": datetime.now().isoformat()
+        }
+
+        info_filename = "info.json"
+        info_path = os.path.join(output_dir, info_filename)
+
+        with open(info_path, "w") as f:
+            json.dump(info, f, indent=2)
+
+        # Create ZIP archive
+        zip_path = os.path.join(output_dir, f"{base_filename}.zip")
+        with zipfile.ZipFile(zip_path, "w") as zipf:
+            zipf.write(json_path, arcname=json_filename)
+            zipf.write(info_path, arcname=info_filename)
+            zipf.write(character_audio_path, arcname="audio_file")
+            zipf.write(character_image_path, arcname="image_file")
+
+        # Optional: clean up loose files
+        os.remove(json_path)
+        os.remove(info_path)
+
+        return zip_path
+    
+
+    def export_workflow(self, target_node, self_node, character_id, output_path, output_format, write_files):
+
+        output_format = output_format.replace(".mp4", "")
+
+        name_dict = {
+                1: "Sophia",
+                2: "Melina",
+                3: "Ada",
+                4: "Taro",
+                5: "Bari",
+                6: "Barney"
+        }
+
+        if write_files:
+            full_workflow = self.get_workflow()
+            api_workflow = self.convert_editor_workflow_to_api_job(full_workflow)
+
+            for k, v in name_dict.items():
+
+                character_name = f"{character_id}_{name_dict[k]}"
+                character_audio_path = self.get_audio_for(output_path, k).replace("\\\\", "/").replace("\\", "/")
+                character_image_path = self.get_stills_for(output_path, k).replace("\\\\", "/").replace("\\", "/")
+
+                new_workflow = self.replace_input_with_static_values(
+                    self_node,
+                    character_name,
+                    character_audio_path,
+                    character_image_path,
+                    api_workflow
+                )
+
+                filtered_api_workflow = self.filter_workflow(new_workflow, target_node)
+
+                filtered_api_workflow = self.remove_reroutes(filtered_api_workflow)
+                
+                output_file_name = os.path.join(MY_OUTPUT_FOLDER, output_path, "jobs", f"{k}_{v}_{output_format}.json")
+
+                output_dir = os.path.join(MY_OUTPUT_FOLDER, output_path, "jobs")
+                base_filename = f"{k}_{v}_{output_format}"
+
+                self.bundle_workflow_to_zip(
+                        filtered_api_workflow,
+                        character_id,
+                        character_name,
+                        character_audio_path,
+                        character_image_path,
+                        output_dir,
+                        base_filename
+                    )
+                
+
+        character_name = f"{character_id}_{name_dict[character_id]}"
+        character_audio_path = self.get_audio_for(output_path, character_id)
+        character_image_path = self.get_stills_for(output_path, character_id)
+
+        return character_name, character_audio_path, character_image_path
+
+
+
+
+# Register nodes in ComfyUI
+NODE_CLASS_MAPPINGS.update(
+    {
+        "TiledRenderNode": TiledRenderNode,
+        "PrepareJobs": PrepareJobs,
+    }
+)
+
+NODE_DISPLAY_NAME_MAPPINGS.update(
+    {
+        "TiledRenderNode": "Tiled Render",
+        "PrepareJobs": "Prepare Jobs",
+    }
+)
