@@ -218,11 +218,10 @@ def run_comphy_job(run_json_path, temp_output_dir):
     print("🚀 Submitting job to ComphyUI")
     response = requests.post(f"{COMPHY_API_URL}/prompt", json=workflow_data)
     if response.status_code != 200:
-        raise RuntimeError(f"Failed to queue job: {response.status_code} {response.text}")
-
-    # 3. Wait for job to complete
-    print("⏳ Waiting for queue to finish...")
-    wait_for_queue_empty()
+        print(f"Failed to queue job: {response.status_code} {response.text}")
+    else:
+        print("⏳ Waiting for queue to finish...")
+        wait_for_queue_empty()
 
     # 4. Snapshot after
     after_files = get_output_file_set()
