@@ -197,6 +197,8 @@ class TiledCropNode:
         return crop_width, crop_height, crop_x, crop_y, min_resolution, tile_str
 
 
+
+
 # Register nodes in ComfyUI
 NODE_CLASS_MAPPINGS.update(
     {

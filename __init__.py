@@ -1,20 +1,28 @@
 # vk-nodes ComfyUI __init__.py
 from .vk_tiled_render import TiledRenderNode, PrepareJobs
-from .vk_tiled_setup import TiledSetupNode, TiledCropNode
+from .vk_tiled_setup import TiledSetupNode, TiledCropNode, TiledConfigNode
+from .vk_audio import LoadAudio
 
+NODE_CLASS_MAPPINGS = {
+    "TiledRenderNode": TiledRenderNode,
+    "PrepareJobs": PrepareJobs,
+    "TiledConfigNode": TiledConfigNode,
+    "TiledSetupNode": TiledSetupNode,
+    "TiledCropNode": TiledCropNode,
+    "LoadAudio": LoadAudio,
+}
 
-from .vk_tiled_render import NODE_CLASS_MAPPINGS as NODE_CLASS_MAPPINGS
-from .vk_tiled_render import NODE_DISPLAY_NAME_MAPPINGS as NODE_DISPLAY_NAME_MAPPINGS
-
-from .vk_tiled_setup import NODE_CLASS_MAPPINGS as NODE_CLASS_MAPPINGS_A
-from .vk_tiled_setup import NODE_DISPLAY_NAME_MAPPINGS as NODE_DISPLAY_NAME_MAPPINGS_A
-
-NODE_CLASS_MAPPINGS.update(NODE_CLASS_MAPPINGS_A)
-NODE_DISPLAY_NAME_MAPPINGS.update(NODE_DISPLAY_NAME_MAPPINGS_A)
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "TiledRenderNode": "Tiled Render",
+    "PrepareJobs": "Prepare Jobs",
+    "TiledConfigNode": "Tiled Config Node",
+    "TiledSetupNode": "Tiled Setup Node",
+    "TiledCropNode": "Tiled Crop Node",
+    "LoadAudio": "Load Audio"
+}
 
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
 
 
-
-UE_VERSION = "1.0.3"
+UE_VERSION = "1.0.6"

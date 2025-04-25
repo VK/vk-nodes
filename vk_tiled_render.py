@@ -268,6 +268,16 @@ class PrepareJobs:
     FUNCTION = "export_workflow"
     CATEGORY = "vk-nodes"
     OUTPUT_NODE = True
+    old_kwargs = {}
+
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        print("is changed ", kwargs)
+        if "write_files" in kwargs and kwargs["write_files"]:
+            return float("NaN")
+        return kwargs
+
 
     def get_workflow(self):
         """ get the workflow. I guess things like this can change
@@ -495,6 +505,19 @@ class PrepareJobs:
         return {k:v for k, v in api_workflow.items() if k not in reroutes}
             
 
+    def fix_paths(self, api_workflow):
+        def fix(obj):
+            if isinstance(obj, dict):
+                return {k: fix(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [fix(item) for item in obj]
+            elif isinstance(obj, str):
+                return obj.replace("\\", "/")
+            else:
+                return obj
+
+        return fix(api_workflow)
+
 
 
 
@@ -569,6 +592,8 @@ class PrepareJobs:
 
     def export_workflow(self, target_node, self_node, character_id, output_path, output_format, write_files):
 
+        print("Export Workflow")
+
         output_format = output_format.replace(".mp4", "")
 
         name_dict = {
@@ -586,7 +611,7 @@ class PrepareJobs:
 
             for k, v in name_dict.items():
 
-                character_name = f"{character_id}_{name_dict[k]}"
+                character_name = f"{k}_{name_dict[k]}"
                 character_audio_path = self.get_audio_for(output_path, k).replace("\\\\", "/").replace("\\", "/")
                 character_image_path = self.get_stills_for(output_path, k).replace("\\\\", "/").replace("\\", "/")
 
@@ -601,11 +626,13 @@ class PrepareJobs:
                 filtered_api_workflow = self.filter_workflow(new_workflow, target_node)
 
                 filtered_api_workflow = self.remove_reroutes(filtered_api_workflow)
+
+                filtered_api_workflow = self.fix_paths(filtered_api_workflow)
                 
-                output_file_name = os.path.join(MY_OUTPUT_FOLDER, output_path, "jobs", f"{k}_{v}_{output_format}.json")
+                # output_file_name = os.path.join(MY_OUTPUT_FOLDER, output_path, "jobs", f"{output_path}_{k}_{v}_{output_format}.json")
 
                 output_dir = os.path.join(MY_OUTPUT_FOLDER, output_path, "jobs")
-                base_filename = f"{k}_{v}_{output_format}"
+                base_filename = f"{output_path}_{k}_{v}_{output_format}"
 
                 self.bundle_workflow_to_zip(
                         filtered_api_workflow,
