@@ -156,12 +156,12 @@ class LoadAudio:
 # Register nodes in ComfyUI
 NODE_CLASS_MAPPINGS.update(
     {
-        "LoadAudio": LoadAudio
+        "VKLoadAudio": LoadAudio
     }
 )
 
 NODE_DISPLAY_NAME_MAPPINGS.update(
     {
-        "LoadAudio": "VK Load Audio"
+        "VKLoadAudio": "VK Load Audio"
     }
 )

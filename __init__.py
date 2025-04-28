@@ -9,7 +9,7 @@ NODE_CLASS_MAPPINGS = {
     "TiledConfigNode": TiledConfigNode,
     "TiledSetupNode": TiledSetupNode,
     "TiledCropNode": TiledCropNode,
-    "LoadAudio": LoadAudio,
+    "VKLoadAudio": LoadAudio,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -18,7 +18,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TiledConfigNode": "Tiled Config Node",
     "TiledSetupNode": "Tiled Setup Node",
     "TiledCropNode": "Tiled Crop Node",
-    "LoadAudio": "Load Audio"
+    "VKLoadAudio": "VK Load Audio"
 }
 
 
