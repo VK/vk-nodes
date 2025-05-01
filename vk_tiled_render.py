@@ -22,15 +22,18 @@ class TiledRenderNode:
         return {
             "required": {
                 "render_config": ("STRING", {"default": "{}"}),
-                # "input_width": ("INT", {"default": 1920, "min": 1}),
-                # "input_height": ("INT", {"default": 1080, "min": 1}),
-                # "output_width": ("INT", {"default": 1920, "min": 1}),
-                # "output_height": ("INT", {"default": 1080, "min": 1}),
                 "padding": ("INT", {"default": 10, "min": 0}),
                 "duration": ("FLOAT", {"default": 1, "min": 0.2}),
-                # "tiling_strategy": ("STRING", {"default": "[[1,2,3],[4,5,6]]"}),
+                "start_time": ("FLOAT", {"default": 0, "min": 0.0}),
                 "output_path": ("STRING", {"default": ""}),
-                "output_name": ("STRING", {"default": "tiled_video.mp4"})
+                "output_name": ("STRING", {"default": "tiled_video.mp4"}),
+                "jingle": ("BOOLEAN", {"default": True}),
+                "jingle_duration": ("FLOAT", {"default": 3.9, "min": 0.0}),
+                "transition_duration": ("FLOAT", {"default": 0.5, "min": 0}),
+                "cut_start": ("FLOAT", {"default": 0, "min": 0.0}),
+                "cut_end": ("FLOAT", {"default": 0, "min": 0.0}),
+                "end_duration": ("FLOAT", {"default": 0, "min": 0.0}),
+                "overlays": ("BOOLEAN", {"default": True}),
             },
             "optional": {
                 "Sophia": ("INT", {"default": -1}),
@@ -60,6 +63,67 @@ class TiledRenderNode:
         return no_sound[index]
 
 
+    def process_internal_overlay(self, image_path):
+        from PIL import Image, ImageOps, ImageDraw, ImageFilter
+        img = Image.open(image_path).convert("RGBA")
+
+        # 1. Remove white borders
+        bbox = ImageOps.invert(img.convert("L")).getbbox()
+        img = img.crop(bbox)
+
+        # 2. Add 20px white padding
+        padding = 40
+        padded_size = (img.width + 2 * padding, img.height + 2 * padding)
+        padded_img = Image.new("RGBA", padded_size, (255, 255, 255, 255))
+        padded_img.paste(img, (padding, padding), img)
+
+        # 3. Create proper rounded rectangle mask
+        corner_radius = 40
+        scale = 4
+        hr_size = (padded_img.width * scale, padded_img.height * scale)
+        hr_mask = Image.new("L", hr_size, 0)
+        hr_draw = ImageDraw.Draw(hr_mask)
+
+        hr_draw.rounded_rectangle(
+            [0, 0, hr_size[0], hr_size[1]],
+            radius=corner_radius * scale,
+            fill=255
+        )
+
+        # Downscale with anti-aliasing
+        mask = hr_mask.resize(padded_img.size, resample=Image.LANCZOS)
+        padded_img.putalpha(mask)
+
+        # 4. Extend canvas before drop shadow
+        extend = 10
+        extended_size = (padded_img.width + 2 * extend, padded_img.height + 2 * extend)
+        extended_img = Image.new("RGBA", extended_size, (0, 0, 0, 0))
+        extended_img.paste(padded_img, (extend, extend), padded_img)
+        extended_mask = Image.new("L", extended_size, 0)
+        extended_mask.paste(mask, (extend, extend))
+
+        # 5. Create and apply drop shadow
+        shadow_offset = 5
+        shadow_spread = 5
+        shadow = Image.new("RGBA", extended_img.size, (0, 0, 0, 100))
+        shadow_blur_mask = extended_mask.filter(ImageFilter.GaussianBlur(radius=shadow_spread))
+        shadow.putalpha(shadow_blur_mask)
+
+        shadow_canvas = Image.new("RGBA", extended_img.size, (0, 0, 0, 0))
+        shadow_canvas.paste(shadow, (shadow_offset, shadow_offset), shadow)
+        base_img = Image.alpha_composite(shadow_canvas, extended_img)
+
+        # 6. Apply 80% global transparency
+        alpha = base_img.getchannel("A").point(lambda p: int(p * 0.8))
+        base_img.putalpha(alpha)
+
+        # 7. Save
+        internal_path = os.path.join(os.path.dirname(image_path), "internal_" + os.path.basename(image_path))
+        base_img.save(internal_path, "PNG")
+
+        return internal_path
+
+
     def get_overlay_images(self, output_path):
         all_overlays = glob.glob(os.path.join(MY_OUTPUT_FOLDER, output_path, "overlays/overlay*.png"))
         
@@ -71,7 +135,8 @@ class TiledRenderNode:
             if match:
                 start_time = float(match.group(1))
                 end_time = float(match.group(2))
-                overlay_data.append({"file": overlay, "start": start_time, "end": end_time})
+                internal_path = self.process_internal_overlay(overlay)
+                overlay_data.append({"file": internal_path, "start": start_time, "end": end_time})
 
         return overlay_data
 
@@ -92,7 +157,16 @@ class TiledRenderNode:
             return None
         return logo[0]
 
-    def process(self, render_config, padding, duration, output_path, output_name,
+    def get_jingle_file(self, output_path, output_name):
+        combined = os.path.join(MY_OUTPUT_FOLDER, output_path, "../Jingle",  output_name)
+        logo = glob.glob(combined)
+        if len(logo) == 0:
+            return None
+        return logo[0]        
+
+
+    def process(self, render_config, padding, duration, start_time, output_path, output_name,
+                jingle=True, jingle_duration=3.9, transition_duration=0.5, cut_start=0, cut_end=0, end_duration=2.0, overlays=True,
                 Sophia=-1, Melina=-1, Ada=-1, Taro=-1, Bari=-1, Barney=-1):
         logging.info("Starting Tiled Render process")
 
@@ -103,6 +177,9 @@ class TiledRenderNode:
         output_height = config["output_height"]
         tiling_strategy = config["tiling_strategy"]
         self.tile_str = config["tile_str"]
+
+        if start_time > 0.001:
+            self.tile_str = f"{start_time}_{self.tile_str}"
 
         all_videos = [
             self.get_large_videos_for(output_path, "Sophia", Sophia),
@@ -117,8 +194,11 @@ class TiledRenderNode:
 
 
         # overlay files
-        overlay_config = self.get_overlay_images(output_path)
-        logging.info(f"overlays: {overlay_config}")       
+        if overlays:
+            overlay_config = self.get_overlay_images(output_path)
+            logging.info(f"overlays: {overlay_config}")       
+        else:
+            overlay_config = []
 
         # logo file
         logo_file = self.get_logo_image(output_path)
@@ -127,6 +207,16 @@ class TiledRenderNode:
         # audio mix file
         mix_file = self.get_mix_file(output_path)
         logging.info(f"mix file: {mix_file}")
+
+        # jingle file
+        jingle_file = self.get_jingle_file(output_path, output_name)
+        logging.info(f"jingle file: {jingle_file}")
+
+        if jingle_file is None:
+            jingle = False
+            dummy_name = output_name
+        else:
+            dummy_name = "dummy.mp4"
 
         filter_complex, inputs = self.generate_ffmpeg_filter(video_files, tiling_strategy, input_width, input_height, output_width, output_height, padding, overlay_config, logo_file)
         if not filter_complex:
@@ -139,6 +229,7 @@ class TiledRenderNode:
             inputs.extend(["-i", mix_file])
             audio_map = ["-map", f"{len(inputs)//2-1}:a"]
 
+
         command = [
             "ffmpeg", "-y"
         ] + inputs + [
@@ -147,17 +238,45 @@ class TiledRenderNode:
         ] + audio_map + [ 
             "-t", f"{duration}",
             "-preset", "slow", "-crf", "18",
-            os.path.join(MY_OUTPUT_FOLDER, output_path, output_name)
+            os.path.join(MY_OUTPUT_FOLDER, output_path, dummy_name)
         ]
         
         logging.info(f"Executing FFmpeg command: {' '.join(command)}")
         try:
             subprocess.run(command, check=True)
             logging.info("FFmpeg processing completed successfully")
-            return (output_path,)
+
+            if not jingle:
+                return (output_path,)            
+            
         except subprocess.CalledProcessError as e:
             logging.error(f"FFmpeg error: {e}")
             return (f"FFmpeg error: {str(e)}",)
+
+
+        transform_command = self.build_ffmpeg_transition(
+            jingle_path=os.path.join(MY_OUTPUT_FOLDER, output_path, "../Jingle", output_name),
+            dummy_path=os.path.join(MY_OUTPUT_FOLDER, output_path, dummy_name),
+            output_path=os.path.join(MY_OUTPUT_FOLDER, output_path),
+            output_name=output_name,
+            duration=duration-cut_end,
+            start_time=cut_start,
+            transition_duration=transition_duration,
+            still_duration=end_duration,
+            jingle_time=jingle_duration
+        )
+
+
+        print("transform command")
+        print(" ".join(transform_command))
+
+        subprocess.run(transform_command, check=True)
+
+        # remove the dummy file
+        #os.remove(os.path.join(MY_OUTPUT_FOLDER, output_path, dummy_name))
+
+
+        return (output_path,)
     
     def extract_videos_from_strategy(self, tiling_strategy, all_videos):
         ordered_videos = []
@@ -245,7 +364,55 @@ class TiledRenderNode:
         logging.info(f"Generated FFmpeg filter_complex: {filter_complex}")
         return filter_complex, inputs
 
+    def build_ffmpeg_transition(
+        self,
+        jingle_path,
+        dummy_path,
+        output_path,
+        output_name,
+        jingle_time=3.9,
+        transition_duration=0.5,
+        duration=16,
+        start_time=0.0,
+        still_duration=2
+    ):
 
+        start_transition = jingle_time - transition_duration
+        end_start_transition = duration + start_transition - start_time
+        
+
+
+        filter_complex = f"""
+            [0:v]format=yuva420p,fade=t=out:st={start_transition}:d={transition_duration}:alpha=1[v0];
+
+            [1:v]format=yuva420p,tpad=start={start_transition*25},setpts=PTS-STARTPTS[cutv1];
+
+            [cutv1]trim={start_time}:{duration+start_transition+transition_duration},setpts=PTS-STARTPTS,fade=t=in:st={start_transition}:d={transition_duration}:alpha=1,fade=t=out:st={end_start_transition}:d={transition_duration}:alpha=1[v1];
+            [v0][v1]overlay,format=yuva420p[vid];
+            [0:v]trim=start_frame=0:end_frame=1,loop={int((duration + jingle_time + still_duration - start_time)*25)}:1:0,setpts=N/FRAME_RATE/TB,format=yuva420p,fade=t=in:st={end_start_transition-transition_duration}:d={transition_duration}:alpha=1[still];
+            [vid][still]overlay=enable='gte(t,{end_start_transition-transition_duration})',format=yuv420p[v];
+
+            [0:a]afade=t=out:st={start_transition}:d={transition_duration}[a0];
+            [1:a]adelay={start_transition*1000}|{start_transition*1000},asetpts=PTS-STARTPTS,atrim={start_time}:{duration+start_transition+transition_duration},asetpts=PTS-STARTPTS,afade=t=in:st={start_transition}:d={transition_duration},afade=t=out:st={end_start_transition-transition_duration}:d={transition_duration}[a1];
+            [a0][a1]amix=inputs=2:dropout_transition={transition_duration}[aud];
+            [aud]apad=pad_dur={still_duration}[a]
+        """.replace("\n", "").replace(" ", "")        
+
+        # Inputs
+        command = [
+            "ffmpeg", "-y",
+            "-i", jingle_path,
+            "-i", dummy_path,
+            "-filter_complex", filter_complex,
+            "-map", "[v]", "-map", "[a]",
+            "-preset", "slow", "-crf", "18",
+            os.path.join(output_path, output_name)
+        ]
+
+        print("merge command")
+        print(" ".join(command))
+
+        return command
 
 
 class PrepareJobs:

@@ -143,6 +143,7 @@ class TiledCropNode:
         return {
             "required": {
                 "render_config": ("STRING", {"default": "{}"}),  # JSON config input
+                "start_time": ("FLOAT", {"default": 0.0}),  # JSON config input
             }
         }
 
@@ -152,7 +153,7 @@ class TiledCropNode:
     CATEGORY = "vk-nodes"
     OUTPUT_NODE = False
 
-    def process(self, render_config):
+    def process(self, render_config, start_time):
         # Parse JSON config
         try:
             cfg = json.loads(render_config)
@@ -193,6 +194,9 @@ class TiledCropNode:
         logging.info(
             f"Crop: width={crop_width}, height={crop_height}, x={crop_x}, y={crop_y}, min_res={min_resolution}"
         )
+
+        if start_time > 0.001:
+            tile_str = f"{start_time}_{tile_str}"
 
         return crop_width, crop_height, crop_x, crop_y, min_resolution, tile_str
 
