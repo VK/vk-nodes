@@ -227,7 +227,11 @@ class TiledRenderNode:
         audio_map = ["-map", "0:a?"]
         if mix_file:
             inputs.extend(["-i", mix_file])
-            audio_map = ["-map", f"{len(inputs)//2-1}:a"]
+            if start_time > 0.001:
+                filter_complex += f";[{len(inputs)//2-1}:a]atrim=start={start_time},asetpts=PTS-STARTPTS[a]"
+                audio_map = ["-map", f"[a]"]
+            else:
+                audio_map = ["-map", f"{len(inputs)//2-1}:a"]
 
 
         command = [
