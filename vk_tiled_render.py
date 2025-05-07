@@ -179,7 +179,11 @@ class TiledRenderNode:
         self.tile_str = config["tile_str"]
 
         if start_time > 0.001:
+            start_time_str = json.dumps({"start_time": start_time})
+            start_time = json.loads(start_time_str)["start_time"]
             self.tile_str = f"{start_time}_{self.tile_str}"
+            print(f"start time: {start_time}")
+            print(f"tile str: {self.tile_str}")
 
         all_videos = [
             self.get_large_videos_for(output_path, "Sophia", Sophia),
@@ -267,7 +271,9 @@ class TiledRenderNode:
             start_time=cut_start,
             transition_duration=transition_duration,
             still_duration=end_duration,
-            jingle_time=jingle_duration
+            jingle_time=jingle_duration,
+            headline_path=os.path.join(MY_OUTPUT_FOLDER, output_path, "overlays", "headline.png"),
+            bandname_path=os.path.join(MY_OUTPUT_FOLDER, output_path, "overlays", "bandname.png")
         )
 
 
@@ -378,22 +384,43 @@ class TiledRenderNode:
         transition_duration=0.5,
         duration=16,
         start_time=0.0,
-        still_duration=2
+        still_duration=2,
+        headline_path="",
+        bandname_path="",
     ):
 
         start_transition = jingle_time - transition_duration
         end_start_transition = duration + start_transition - start_time
         
 
+        # get the headline and bandname size
+        headline_w, headline_h = self.get_image_size(headline_path)
+        bandname_w, bandname_h = self.get_image_size(bandname_path)
 
+        # create a complex filter that uses the jingle video and places the headline in the top part with a maximal width of 900px 
+        # and the bandname in the bottom part with a maximal width of 900px
+        # the jingle starts immediateld and fades into the dummy video after the start_transition time
+        # the headline image fade in after 0.1 seconds and fades out after the end_start_transition time
+        # 0:v - the jingle video
+        # 1:v - the video to add the jingle start and end
+        # 2:v - the headline image
+        # 3:v - the bandname image
+
+        
         filter_complex = f"""
             [0:v]format=yuva420p,fade=t=out:st={start_transition}:d={transition_duration}:alpha=1[v0];
-
             [1:v]format=yuva420p,tpad=start={start_transition*25},setpts=PTS-STARTPTS[cutv1];
+            [2:v]scale=w=min(900\,iw):h=-1[v2];
+            [3:v]scale=w=min(700\,iw):h=-1[v3];
+
+            [v0][v2]overlay=x=(W-w)/2:y=(H-h)/2-300-h/2:format=auto:enable='between(t,0,{end_start_transition})'[v0];
+            [v0][v3]overlay=x=(W-w)/2:y=(H-h)/2+300+h/2:format=auto:enable='between(t,0,{end_start_transition})'[v0];
+            
 
             [cutv1]trim={start_time}:{duration+start_transition+transition_duration},setpts=PTS-STARTPTS,fade=t=in:st={start_transition}:d={transition_duration}:alpha=1,fade=t=out:st={end_start_transition}:d={transition_duration}:alpha=1[v1];
             [v0][v1]overlay,format=yuva420p[vid];
             [0:v]trim=start_frame=0:end_frame=1,loop={int((duration + jingle_time + still_duration - start_time)*25)}:1:0,setpts=N/FRAME_RATE/TB,format=yuva420p,fade=t=in:st={end_start_transition-transition_duration}:d={transition_duration}:alpha=1[still];
+
             [vid][still]overlay=enable='gte(t,{end_start_transition-transition_duration})',format=yuv420p[v];
 
             [0:a]afade=t=out:st={start_transition}:d={transition_duration}[a0];
@@ -407,6 +434,8 @@ class TiledRenderNode:
             "ffmpeg", "-y",
             "-i", jingle_path,
             "-i", dummy_path,
+            "-i", headline_path,
+            "-i", bandname_path,
             "-filter_complex", filter_complex,
             "-map", "[v]", "-map", "[a]",
             "-preset", "slow", "-crf", "18",

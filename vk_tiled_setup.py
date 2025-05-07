@@ -196,6 +196,8 @@ class TiledCropNode:
         )
 
         if start_time > 0.001:
+            start_time_str = json.dumps({"start_time": start_time})
+            start_time = json.loads(start_time_str)            
             tile_str = f"{start_time}_{tile_str}"
 
         return crop_width, crop_height, crop_x, crop_y, min_resolution, tile_str
